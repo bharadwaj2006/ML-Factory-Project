@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, type FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Mail, Lock, User, X, Shield } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, type FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { Mail, Lock, User, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -16,7 +16,7 @@ export function LoginModal({ isOpen, onClose, onSwitchToRegister }: LoginProps) 
   const [error, setError] = useState('');
   const { login } = useAuth();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError('');

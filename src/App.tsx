@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from './context/AuthContext';
-import { LoginModal, RegisterModal } from './components/LoginModal';
+import { LoginModal } from './components/LoginModal';
+import { RegisterModal } from './components/RegisterModal';
 import { 
   Activity, 
   Thermometer, 
@@ -90,7 +91,7 @@ export default function App() {
         riskLevel: data.risk_level as any,
         shapValues: data.shap_values,
         explanation: 'Real-time ML prediction received',
-        recommendedAction: get_recommendation(data.failure_probability),
+        recommendedAction: data.failure_probability > 0.6 ? 'SCHEDULE AUDIT' : data.failure_probability > 0.3 ? 'INCREASE MONITORING' : 'NORMAL',
       });
       addLog(`[RT PREDICT] ${data.risk_level.toUpperCase()} (${(data.failure_probability*100).toFixed(1)}%)`, data.risk_level === 'critical' ? 'error' : data.risk_level === 'high' ? 'warn' : 'info');
     },
