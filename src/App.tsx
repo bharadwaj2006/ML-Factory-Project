@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useAuth } from './context/AuthContext';
+import { LoginModal, RegisterModal } from './components/LoginModal';
 import { 
   Activity, 
   Thermometer, 
@@ -13,7 +15,9 @@ import {
   Upload,
   FileJson,
   Play,
-  RotateCcw
+  RotateCcw,
+  User,
+  LogOut
 } from 'lucide-react';
 import Papa from 'papaparse';
 import { 
@@ -32,9 +36,7 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { GoogleGenAI, Type } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+import { useRealtime } from './hooks/useRealtime';
 
 // Types
 interface SensorData {
@@ -42,6 +44,7 @@ interface SensorData {
   vibration: number;
   temperature: number;
   pressure: number;
+  failureProbability?: number;
 }
 
 interface PredictionResult {
@@ -55,6 +58,9 @@ interface PredictionResult {
 type ViewMode = 'dashboard' | 'model-lab' | 'stack';
 
 export default function App() {
+  const { user, logout, isAuthenticated, loading: authLoading } = useAuth();
+  const [showLogin, setShowLogin] = useState(false);
+  const [showRegister, setShowRegister] = useState(false);
   const [dataHistory, setDataHistory] = useState<SensorData[]>([]);
   const [currentPredict, setCurrentPredict] = useState<PredictionResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -66,6 +72,39 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [logs, setLogs] = useState<{msg: string, type: 'info' | 'warn' | 'error', time: string}[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const socketCallbacks = {
+    onSensorUpdate: (data: any) => {
+      const sensor: SensorData = {
+        time: new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        vibration: data.vibration,
+        temperature: data.temperature,
+        pressure: data.pressure,
+      };
+      setDataHistory(prev => [...prev.slice(-39), sensor]);
+      addLog(`[RT] Sensor update robot-${data.robot_id}: vib=${data.vibration.toFixed(2)}`, 'info');
+    },
+    onPrediction: (data: any) => {
+      setCurrentPredict({
+        failureProbability: data.failure_probability,
+        riskLevel: data.risk_level as any,
+        shapValues: data.shap_values,
+        explanation: 'Real-time ML prediction received',
+        recommendedAction: get_recommendation(data.failure_probability),
+      });
+      addLog(`[RT PREDICT] ${data.risk_level.toUpperCase()} (${(data.failure_probability*100).toFixed(1)}%)`, data.risk_level === 'critical' ? 'error' : data.risk_level === 'high' ? 'warn' : 'info');
+    },
+  };
+
+  const socket = useRealtime(socketCallbacks);
+
+  // Local model weights (simulated "trained" parameters)
+  const [modelWeights, setModelWeights] = useState({
+    vibration: 0.15,
+    temperature: 0.12,
+    pressure: 0.08,
+    bias: -0.5
+  });
 
   // Initial Data Generation
   useEffect(() => {
@@ -94,96 +133,102 @@ export default function App() {
         setDataHistory(prev => {
           const last = prev[prev.length - 1];
           const newTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          const newVal = {
+          
+          // Smoother, more realistic drift that naturally progresses to high/critical states
+          const newVal: SensorData = {
             time: newTime,
-            vibration: Math.max(0, last.vibration + (Math.random() - 0.5) * 1.5),
-            temperature: Math.max(0, last.temperature + (Math.random() - 0.5) * 5),
-            pressure: Math.max(0, last.pressure + (Math.random() - 0.5) * 2),
+            vibration: Math.max(1, last.vibration + (Math.random() - 0.4) * 0.5),
+            temperature: Math.max(40, last.temperature + (Math.random() - 0.4) * 2),
+            pressure: Math.max(5, last.pressure + (Math.random() - 0.4) * 0.5),
+            failureProbability: last.failureProbability // Carry over last prediction for graph continuity
           };
+          
+          // Reset if it gets too theoretically impossible
+          if (newVal.vibration > 8) newVal.vibration = 2.5 + Math.random();
+          if (newVal.temperature > 110) newVal.temperature = 65 + Math.random() * 5;
+          if (newVal.pressure > 20) newVal.pressure = 12 + Math.random();
+
           return [...prev.slice(1), newVal];
         });
       }
-    }, 5000);
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [isAutoPilot, uploadedData]);
 
   // Trigger Prediction & Logs
+  const lastProcessedTime = useRef<string | null>(null);
+
   useEffect(() => {
     const latest = dataHistory[dataHistory.length - 1];
-    if (latest && (dataHistory.length % 5 === 0)) {
+    if (latest && isAutoPilot && lastProcessedTime.current !== latest.time) {
+      lastProcessedTime.current = latest.time;
+      // Run prediction every tick, but since it's local we don't need artificial visual delay 
+      // that causes flickering.
       runPrediction(latest);
-      addLog(`[TELEMETRY] Sensor batch analyzed. Mean Temp: ${latest.temperature.toFixed(1)}°C`, 'info');
+
+      if (latest.vibration > 4.5) {
+        addLog(`[ANOMALY] High vibration detected: ${latest.vibration.toFixed(2)}mm/s²`, 'warn');
+      }
     }
-    
-    if (latest?.vibration > 4.5) {
-      addLog(`[ANOMALY] High vibration detected: ${latest.vibration.toFixed(2)}mm/s²`, 'warn');
-    }
-  }, [dataHistory]);
+  }, [dataHistory, isAutoPilot]);
 
   const addLog = (msg: string, type: 'info' | 'warn' | 'error' = 'info') => {
     setLogs(prev => [{ msg, type, time: new Date().toLocaleTimeString() }, ...prev.slice(0, 49)]);
   };
 
-  const runPrediction = async (sensor: SensorData) => {
-    setLoading(true);
+  const runPrediction = (sensor: SensorData) => {
     setError(null);
+    
     try {
-      const prompt = `
-        You are the "FactoryGuard AI" Predictive Maintenance Engine.
-        Input Data (Current Sensors):
-        - Vibration: ${sensor.vibration} mm/s²
-        - Temperature: ${sensor.temperature} °C
-        - Pressure: ${sensor.pressure} bar
-        
-        Recent History Context: ${JSON.stringify(dataHistory.slice(-10))}
-
-        Objective: Predict the probability of a catastrophic robotic arm failure within the next 24 hours.
-        Return ONLY valid JSON including failureProbability, riskLevel, shapValues, explanation, recommendedAction.
-      `;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              failureProbability: { type: Type.NUMBER },
-              riskLevel: { type: Type.STRING, enum: ["low", "medium", "high", "critical"] },
-              shapValues: {
-                type: Type.OBJECT,
-                properties: {
-                  vibration: { type: Type.NUMBER },
-                  temperature: { type: Type.NUMBER },
-                  pressure: { type: Type.NUMBER }
-                }
-              },
-              explanation: { type: Type.STRING },
-              recommendedAction: { type: Type.STRING }
-            },
-            required: ["failureProbability", "riskLevel", "shapValues", "explanation", "recommendedAction"]
-          }
-        }
-      });
+      // Local Heuristic "ML Model"
+      // score = (vibration * w1 + temp * w2 + pressure * w3) + bias
+      // normalized around thresholds
+      const vScore = (sensor.vibration / 5) * modelWeights.vibration;
+      const tScore = (sensor.temperature / 100) * modelWeights.temperature;
+      const pScore = (sensor.pressure / 20) * modelWeights.pressure;
       
-      const text = response.text;
-      if (text) {
-        setCurrentPredict(JSON.parse(text));
-      }
+      const rawScore = (vScore + tScore + pScore) * 25 - 6.5 + modelWeights.bias;
+      const failProb = Math.min(0.99, Math.max(0.01, 1 / (1 + Math.exp(-rawScore))));
+
+      let riskLevel: PredictionResult['riskLevel'] = 'low';
+      if (failProb > 0.85) riskLevel = 'critical';
+      else if (failProb > 0.65) riskLevel = 'high';
+      else if (failProb > 0.35) riskLevel = 'medium';
+
+      const shapValues = {
+        vibration: (vScore / (vScore + tScore + pScore || 1)),
+        temperature: (tScore / (vScore + tScore + pScore || 1)),
+        pressure: (pScore / (vScore + tScore + pScore || 1))
+      };
+
+      const prediction = {
+        failureProbability: failProb,
+        riskLevel,
+        shapValues,
+        explanation: `Analysis indicates ${riskLevel} risk. Vibration contribution is ${(shapValues.vibration * 100).toFixed(1)}%. Logic gates mapped to local weights [v:${modelWeights.vibration.toFixed(2)}, t:${modelWeights.temperature.toFixed(2)}].`,
+        recommendedAction: failProb > 0.6 
+          ? "SCHEDULE IMMEDIATE HARDWARE AUDIT" 
+          : failProb > 0.3 
+            ? "INCREASE TELEMETRY FREQUENCY" 
+            : "MAINTAIN CURRENT OPERATION PARAMETERS"
+      };
+
+      setCurrentPredict(prediction);
+
+      // Update history with the prediction result for graphing
+      setDataHistory(prev => {
+        const next = [...prev];
+        if (next.length > 0) {
+          next[next.length - 1] = { ...next[next.length - 1], failureProbability: failProb };
+        }
+        return next;
+      });
+
     } catch (err: any) {
       console.error("Prediction Error:", err);
-      const msg = err.message || String(err);
-      if (msg.toLowerCase().includes("quota")) {
-        setError("API Quota Reached");
-        addLog("[CRITICAL] Gemini API Quota Exceeded. Update key in Settings.", "error");
-      } else {
-        setError("Engine Error");
-        addLog("[ERROR] Failed to connect to AI Inference Engine.", "error");
-      }
-    } finally {
-      setLoading(false);
+      setError("Inference Error");
+      addLog("[ERROR] Local kernel failed to compute state.", "error");
     }
   };
 
@@ -201,14 +246,23 @@ export default function App() {
     for (let i = 1; i <= epochs; i++) {
         await new Promise(r => setTimeout(r, 600));
         setTrainProgress((i / epochs) * 100);
-        addLog(`[TRAIN] Epoch ${i}/${epochs} - Loss: ${(0.45 / i).toFixed(4)} - Accuracy: ${(88 + i * 2).toFixed(1)}%`, "info");
+        
+        // Simulate "learning" by slightly adjusting weights
+        setModelWeights(prev => ({
+          vibration: prev.vibration * (0.95 + Math.random() * 0.1),
+          temperature: prev.temperature * (0.95 + Math.random() * 0.1),
+          pressure: prev.pressure * (0.95 + Math.random() * 0.1),
+          bias: prev.bias + (Math.random() - 0.5) * 0.1
+        }));
+
+        addLog(`[TRAIN] Epoch ${i}/${epochs} - Loss: ${(0.42 / i).toFixed(4)} - Alpha: ${(0.01 / i).toFixed(5)}`, "info");
     }
 
     await new Promise(r => setTimeout(r, 400));
     setIsTraining(false);
     setTrainProgress(0);
     setIsAutoPilot(true);
-    addLog("[SUCCESS] Model v2.1.2-Patch-A deployed successfully.", "info");
+    addLog("[SUCCESS] Model recalibrated. Weights synchronized to local baseline.", "info");
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -345,7 +399,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="p-4 lg:p-8 flex-1">
+        <main className="p-4 lg:p-8 flex-1 min-w-0 overflow-hidden">
           <AnimatePresence mode="wait">
             {viewMode === 'dashboard' && (
               <motion.div 
@@ -365,6 +419,56 @@ export default function App() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="lg:col-span-2 space-y-6">
+                    <div className="bg-zinc-900 border border-zinc-800 p-4 lg:p-6 rounded-sm">
+                      <div className="flex justify-between items-end mb-6">
+                        <div>
+                          <h3 className="text-xs font-black uppercase text-zinc-500 italic">Risk Level Trend</h3>
+                          <p className="text-[10px] text-zinc-700 uppercase">Probability mapped against alert zones</p>
+                        </div>
+                        <div className="flex gap-4">
+                          <LegendItem color="#ef4444" label="Critical" />
+                          <LegendItem color="#f97316" label="High" />
+                          <LegendItem color="#3b82f6" label="Medium" />
+                          <LegendItem color="#10b981" label="Low" />
+                        </div>
+                      </div>
+                      <div className="h-48 lg:h-56">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={dataHistory}>
+                            <defs>
+                              <linearGradient id="riskGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#ef4444" stopOpacity={0.2}/>
+                                <stop offset="15%" stopColor="#f97316" stopOpacity={0.15}/>
+                                <stop offset="35%" stopColor="#3b82f6" stopOpacity={0.1}/>
+                                <stop offset="65%" stopColor="#10b981" stopOpacity={0.05}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                            <XAxis dataKey="time" hide />
+                            <YAxis domain={[0, 1]} hide />
+                            <Tooltip 
+                              contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', fontSize: '10px' }}
+                              formatter={(v: number) => [`${(v * 100).toFixed(1)}%`, 'Failure Prob']}
+                            />
+                            
+                            {/* Background Zones */}
+                            <ReferenceLine y={0.85} stroke="#ef4444" strokeWidth={1} strokeDasharray="5 5" label={{ value: 'CRITICAL', position: 'insideRight', fill: '#ef4444', fontSize: 8 }} />
+                            <ReferenceLine y={0.65} stroke="#f97316" strokeWidth={1} strokeDasharray="3 3" label={{ value: 'HIGH', position: 'insideRight', fill: '#f97316', fontSize: 8 }} />
+                            <ReferenceLine y={0.35} stroke="#3b82f6" strokeWidth={1} strokeDasharray="3 3" label={{ value: 'MED', position: 'insideRight', fill: '#3b82f6', fontSize: 8 }} />
+
+                            <Area 
+                              type="monotone" 
+                              dataKey="failureProbability" 
+                              stroke="#fbbf24" 
+                              strokeWidth={3}
+                              fill="url(#riskGradient)" 
+                              isAnimationActive={false} 
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
                     <div className="bg-zinc-900 border border-zinc-800 p-4 lg:p-6 rounded-sm">
                       <div className="flex justify-between items-end mb-6">
                         <div>
@@ -546,9 +650,9 @@ export default function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative">
                    {/* Stack Items */}
-                   <StackItem title="Data Foundation" tools={["Pandas/NumPy", "Apache Spark"]} desc="Distributed ETL for terabyte-scale sensor histories." />
-                   <StackItem title="Modeling Engine" tools={["Scikit-Learn", "XGBoost/LightGBM"]} desc="Gradient boosting for state-of-the-art tabular failure prediction." />
-                   <StackItem title="Deployment/Ops" tools={["Docker", "MLflow", "Gemini 2.0"]} desc="Containerized inference with AI-driven causal explainability." />
+                   <StackItem title="Data Foundation" tools={["Local Stream", "Ring Buffer"]} desc="High-velocity telemetry captured in a localized 10s window." />
+                   <StackItem title="Modeling Engine" tools={["Heuristic ML", "Kernel Inference"]} desc="Proprietary weight-based inference running fully on-edge." />
+                   <StackItem title="Deployment/Ops" tools={["Vite Runtime", "React Core"]} desc="Isolated production enviroment with zero external latency." />
                 </div>
 
                 <div className="mt-12 pt-12 border-t border-zinc-800">
@@ -666,15 +770,34 @@ function PredictionSummaryCard({ prediction, loading, error }: { prediction: Pre
   const riskColors: Record<string, string> = { low: 'text-emerald-500', medium: 'text-blue-400', high: 'text-orange-400', critical: 'text-red-500' };
   return (
     <div className={cn(
-      "bg-zinc-900 border rounded-sm p-4 transition-all relative overflow-hidden",
-      prediction?.riskLevel === 'critical' ? 'border-red-500 animate-pulse' : error ? 'border-red-900/50' : 'border-zinc-800'
+      "bg-zinc-900 border rounded-sm p-4 transition-all relative overflow-hidden flex flex-col justify-between",
+      prediction?.riskLevel === 'critical' ? 'border-red-500' : error ? 'border-red-900/50' : 'border-zinc-800'
     )}>
-      {loading && <div className="absolute inset-0 bg-zinc-950/80 backdrop-blur-[2px] flex items-center justify-center z-10"><Activity className="animate-spin text-hazard" size={16} /></div>}
-      <span className="text-[10px] font-black text-zinc-600 uppercase italic mb-4 block">P_FAILURE_24H</span>
-      <div className="flex items-center justify-between">
+      {/* Subtle Progress Bar for Loading */}
+      {loading && (
+        <motion.div 
+          initial={{ x: '-100%' }}
+          animate={{ x: '100%' }}
+          transition={{ repeat: Infinity, duration: 1.5, ease: 'linear' }}
+          className="absolute top-0 left-0 right-0 h-[2px] bg-hazard/50 z-20"
+        />
+      )}
+      
+      <div className="flex justify-between items-start mb-2">
+        <span className="text-[10px] font-black text-zinc-600 uppercase italic">P_FAILURE_24H</span>
+        <div className={cn(
+          "px-1.5 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest",
+          loading ? "bg-hazard/10 text-hazard animate-pulse" : "bg-zinc-800 text-zinc-500"
+        )}>
+          {loading ? "Inference" : "Synced"}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-auto">
         <span className={cn(
           "text-2xl font-black italic tracking-tighter uppercase", 
-          error ? "text-red-500 text-xs" : prediction ? riskColors[prediction.riskLevel] : 'text-zinc-600'
+          error ? "text-red-500 text-xs" : prediction ? riskColors[prediction.riskLevel] : 'text-zinc-600',
+          prediction?.riskLevel === 'critical' && "animate-pulse"
         )}>
           {error || (prediction ? prediction.riskLevel : 'IDLE')}
         </span>

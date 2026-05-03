@@ -1,25 +1,39 @@
-# TODO: FactoryGuard AI - Fix API Quota Error
+# FactoryGuard AI - Real-time Auth Enhancement TODO
 
-## Plan
-1. ✅ Analyze codebase and understand the API dependency
-2. Add local fallback prediction engine with fallback logic
-3. Improve error handling and UI feedback for quota issues
-4. Add .env.example for easier API key configuration
-5. Update README with local mode instructions
-6. Create Git commits (minimum 3)
+## Approved Plan Steps (breakdown):
 
-## Progress Tracker
-- [x] Task 1: Add local prediction engine (src/lib/localPrediction.ts)
-- [x] Task 2: Update App.tsx to use local fallback
-- [x] Task 3: Improve error handling and UI feedback
-- [x] Task 4: Add .env.example configuration
-- [x] Task 5: Update README with instructions
-- [x] Task 6: Git commit 1 - Add local prediction engine
-- [x] Task 7: Git commit 2 - Improve error handling
-- [x] Task 8: Git commit 3 - Add .env.example
-- [x] Task 9: Git commit 4 - Update README
+### Step 1: Dependencies & Setup [ ]
+- Update package.json with socket.io-client, jsonwebtoken, bcryptjs, jwt-decode, react-router-dom
+- Update backend/requirements.txt with flask-socketio, pyjwt, passlib[bcrypt]
+- Run `npm install` && `cd backend && pip install -r requirements.txt -U`
 
-## Git Commits Made
-1. 751b85a - feat: add local prediction engine for offline fallback
-2. 1388b77 - config: add .env.example for easier API key configuration
-3. 1f42de7 - docs: add TODO.md for tracking API quota fix progress
+### Step 2: Backend Authentication & Real-time [ ]
+- Edit backend/app.py: Add JWT /login /register endpoints
+- Add Flask-SocketIO, protect /predict with token
+- Add '/factory' namespace: emit sensor_updates, predictions (simulate data)
+
+### Step 3: Frontend Auth UI & Context [ ]
+- Create src/context/AuthContext.tsx (Provider, login/logout, token mgmt)
+- Create src/components/LoginModal.tsx, RegisterModal.tsx (Tailwind forms)
+- Update src/main.tsx: Wrap App with AuthProvider
+
+### Step 4: Frontend Real-time & Integration [ ]
+- Edit src/App.tsx: Auth check (redirect/overlay), socket.io connect/listen updates
+- Replace local predict → API /predict with auth header
+- Add useSocket hook
+
+### Step 5: Polish & Commits [ ]
+- Error handling, logout, README updates
+- Git branch blackboxai/feat-realtime-auth
+- 5 commits: deps, backend-auth, frontend-auth, realtime-frontend, polish
+- Test: npm dev + python backend/app.py
+
+## Progress Tracking
+- [x] Step 1 Complete
+- [x] Step 2 Complete (Backend app.py with auth/WS/mock)
+- [x] Step 3 Complete (Auth context/modals, main.tsx Provider)
+- [ ] Step 4 Frontend integration/realtime
+- [ ] Step 5 Commits/polish
+
+
+

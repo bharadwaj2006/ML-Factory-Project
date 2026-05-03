@@ -10,3 +10,6 @@ imbalanced-learn==0.12.4
 python-dotenv==1.0.1
 pydantic==2.8.2
 gunicorn==22.0.0
+flask-socketio==5.3.6
+pyjwt==2.9.0
+passlib[bcrypt]==1.7.4
