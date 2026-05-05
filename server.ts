@@ -11,9 +11,23 @@ async function startServer() {
 
   app.use(express.json());
 
-  // API Routes
+  // API Proxy to Backend (:5000)
+  app.use('/api', (req, res, next) => {
+    req.url = '/api' + req.url;
+    req.headers.host = 'localhost:5000';
+    fetch(`http://localhost:5000${req.url}`, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...req.headers
+      },
+      body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined
+    }).then(r => r.json()).then(data => res.json(data)).catch(next);
+  });
+
+  // Health check (direct)
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", system: "FactoryGuard AI Production Node" });
+    res.json({ status: "ok", system: "FactoryGuard AI Production Node", backend_proxy: true });
   });
 
   // Vite middleware for development

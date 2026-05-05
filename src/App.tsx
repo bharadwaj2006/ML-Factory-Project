@@ -59,9 +59,16 @@ interface PredictionResult {
 type ViewMode = 'dashboard' | 'model-lab' | 'stack';
 
 export default function App() {
-  const { user, logout, isAuthenticated, loading: authLoading } = useAuth();
+  const { user, logout, isAuthenticated, loading: authLoading, token } = useAuth();
   const [showLogin, setShowLogin] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated && !authLoading && !showLogin && !showRegister) {
+      setShowLogin(true);
+    }
+  }, [isAuthenticated, authLoading, showLogin, showRegister]);
+
   const [dataHistory, setDataHistory] = useState<SensorData[]>([]);
   const [currentPredict, setCurrentPredict] = useState<PredictionResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -74,6 +81,46 @@ export default function App() {
   const [logs, setLogs] = useState<{msg: string, type: 'info' | 'warn' | 'error', time: string}[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const predictAPI = async (sensor: SensorData) => {
+    if (!token || !isAuthenticated) return runPrediction(sensor); // fallback
+
+    setLoading(true);
+    try {
+      const res = await fetch('/api/predict', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          robot_id: 'robot-001',
+          timestamp: new Date().toISOString(),
+          vibration: sensor.vibration,
+          temperature: sensor.temperature,
+          pressure: sensor.pressure
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCurrentPredict({
+          failureProbability: data.failure_probability,
+          riskLevel: data.risk_level as any,
+          shapValues: data.shap_values || {vibration: 0.4, temperature: 0.35, pressure: 0.25},
+          explanation: data.explanation || 'Backend ML prediction',
+          recommendedAction: data.recommended_action || 'Monitor',
+        });
+        addLog(`[API PREDICT] ${data.risk_level?.toUpperCase() || 'LOW'} (${Math.round(data.failure_probability * 100)}%)`, (data.risk_level === 'critical' ? 'error' : data.risk_level === 'high' ? 'warn' : 'info') as any);
+      } else {
+        throw new Error(data.error);
+      }
+    } catch (err: any) {
+      console.warn('API predict failed, local fallback:', err.message);
+      addLog('[FALLBACK] Backend unavailable, using local model', 'warn');
+      runPrediction(sensor);
+    }
+    setLoading(false);
+  };
+
   const socketCallbacks = {
     onSensorUpdate: (data: any) => {
       const sensor: SensorData = {
@@ -84,14 +131,17 @@ export default function App() {
       };
       setDataHistory(prev => [...prev.slice(-39), sensor]);
       addLog(`[RT] Sensor update robot-${data.robot_id}: vib=${data.vibration.toFixed(2)}`, 'info');
+      if (isAuthenticated) {
+        predictAPI(sensor);
+      }
     },
     onPrediction: (data: any) => {
       setCurrentPredict({
         failureProbability: data.failure_probability,
         riskLevel: data.risk_level as any,
         shapValues: data.shap_values,
-        explanation: 'Real-time ML prediction received',
-        recommendedAction: data.failure_probability > 0.6 ? 'SCHEDULE AUDIT' : data.failure_probability > 0.3 ? 'INCREASE MONITORING' : 'NORMAL',
+        explanation: data.explanation || 'Real-time ML prediction received',
+        recommendedAction: data.recommended_action || (data.failure_probability > 0.6 ? 'SCHEDULE AUDIT' : data.failure_probability > 0.3 ? 'INCREASE MONITORING' : 'NORMAL'),
       });
       addLog(`[RT PREDICT] ${data.risk_level.toUpperCase()} (${(data.failure_probability*100).toFixed(1)}%)`, data.risk_level === 'critical' ? 'error' : data.risk_level === 'high' ? 'warn' : 'info');
     },
@@ -118,9 +168,13 @@ export default function App() {
     setDataHistory(initialData);
   }, []);
 
-  // Simulation Loop (Simplified for clarity)
   useEffect(() => {
-    if (!isAutoPilot) return;
+    setIsAutoPilot(!isAuthenticated);
+  }, [isAuthenticated]);
+
+  // Simulation Loop (only unauthenticated/local)
+  useEffect(() => {
+    if (isAuthenticated || !isAutoPilot) return;
 
     const interval = setInterval(() => {
       if (uploadedData.length > 0) {
@@ -155,24 +209,22 @@ export default function App() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [isAutoPilot, uploadedData]);
+  }, [isAutoPilot, uploadedData, isAuthenticated]);
 
   // Trigger Prediction & Logs
   const lastProcessedTime = useRef<string | null>(null);
 
   useEffect(() => {
     const latest = dataHistory[dataHistory.length - 1];
-    if (latest && isAutoPilot && lastProcessedTime.current !== latest.time) {
+    if (latest && !isAuthenticated && isAutoPilot && lastProcessedTime.current !== latest.time) {
       lastProcessedTime.current = latest.time;
-      // Run prediction every tick, but since it's local we don't need artificial visual delay 
-      // that causes flickering.
       runPrediction(latest);
 
       if (latest.vibration > 4.5) {
         addLog(`[ANOMALY] High vibration detected: ${latest.vibration.toFixed(2)}mm/s²`, 'warn');
       }
     }
-  }, [dataHistory, isAutoPilot]);
+  }, [dataHistory, isAutoPilot, isAuthenticated]);
 
   const addLog = (msg: string, type: 'info' | 'warn' | 'error' = 'info') => {
     setLogs(prev => [{ msg, type, time: new Date().toLocaleTimeString() }, ...prev.slice(0, 49)]);
@@ -397,12 +449,37 @@ export default function App() {
               <span className="sm:hidden">{isAutoPilot ? 'ACTIVE' : 'PAUSED'}</span>
               <span className="hidden sm:inline">{isAutoPilot ? 'SIMULATION_ACTIVE' : 'SIMULATION_PAUSED'}</span>
             </button>
+            {isAuthenticated && (
+              <button 
+                onClick={logout}
+                className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-sm transition-all text-zinc-400 hover:text-white flex items-center gap-1 text-xs"
+                title="Logout"
+              >
+                <User size={14} />
+                <span className="hidden sm:inline">{user?.username || 'User'}</span>
+              </button>
+            )}
           </div>
         </header>
 
+        {(!isAuthenticated || authLoading) && (
+          <div className="absolute inset-0 flex items-center justify-center z-[80] bg-zinc-950/90">
+            <AnimatePresence mode="wait">
+              {showLogin && <LoginModal isOpen={showLogin} onClose={() => setShowLogin(false)} onSwitchToRegister={() => {
+                setShowLogin(false);
+                setShowRegister(true);
+              }} />}
+              {showRegister && <RegisterModal isOpen={showRegister} onClose={() => setShowRegister(false)} onSwitchToLogin={() => {
+                setShowRegister(false);
+                setShowLogin(true);
+              }} />}
+            </AnimatePresence>
+          </div>
+        )}
         <main className="p-4 lg:p-8 flex-1 min-w-0 overflow-hidden">
           <AnimatePresence mode="wait">
             {viewMode === 'dashboard' && (
+
               <motion.div 
                 key="dashboard"
                 initial={{ opacity: 0, y: 10 }}

@@ -36,13 +36,19 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 users_db = {}  # In-memory users {username: {'password_hash': hash, 'email': email}}
 
-# MongoDB
+# Mongo optional - in-memory users fallback
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
-client = MongoClient(MONGO_URI)
-db = client['factoryguard']
-sensors = db['sensors']
-predictions = db['predictions']
-users = db['users']
+try:
+  client = MongoClient(MONGO_URI)
+  db = client['factoryguard']
+  sensors = db['sensors']
+  predictions = db['predictions']
+  users = db['users']
+  client.admin.command('ping')
+except:
+  # No Mongo - use in-memory
+  sensors = predictions = users = None
+  print('Mongo unavailable - using in-memory')
 
 def verify_password(plain_password, hashed_password):
   return pwd_context.verify(plain_password, hashed_password)
@@ -86,7 +92,8 @@ def register():
       'password_hash': get_password_hash(data.password),
       'created_at': datetime.now()
     }
-    users.insert_one(user_doc)
+    if users:
+      users.insert_one(user_doc)
     users_db[data.username] = {'password_hash': user_doc['password_hash'], 'email': data.email}
 
     access_token = create_access_token(
@@ -104,8 +111,9 @@ def register():
 def login():
   try:
     data = LoginData(**request.json)
-    user_data = users.find_one({'username': data.username})
-    if not user_data or not verify_password(data.password, user_data['password_hash']):
+    user_data = users.find_one({'username': data.username}) if users else None
+    user_hash = users_db.get(data.username, {}).get('password_hash')
+    if not user_data and not user_hash or not verify_password(data.password, user_hash or user_data['password_hash']):
       return jsonify({'error': 'Invalid credentials'}), 401
 
     access_token = create_access_token(
@@ -167,7 +175,8 @@ def predict():
       'shap_importance': shap_values,
       'created_at': datetime.now()
     }
-    predictions.insert_one(pred_doc)
+    if predictions:
+      predictions.insert_one(pred_doc)
     
     # Broadcast via socket
     socketio.emit('prediction', {
