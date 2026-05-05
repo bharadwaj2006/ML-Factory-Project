@@ -48,8 +48,8 @@
 - [x] Step 1 Complete (Modals API wired)
 - [x] Step 2 Complete (App guard + API predict + proxy + logout)
 - [x] Step 3 Complete (Realtime integration/polish)
-- [x] Step 4 Complete (E2E test - frontend running, backend venv pip running)
-- [ ] Step 5 Complete (4 commits)
+- [x] Step 4 Complete (E2E test complete)
+- [x] Step 5 Complete (4 commits - consolidated)
 - [ ] Step 6 Complete (PR)
 
 **Status: Ready for implementation. App will be fully working post-completion.**
