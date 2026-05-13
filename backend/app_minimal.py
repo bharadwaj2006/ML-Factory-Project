@@ -26,6 +26,10 @@ def verify_token(token):
   except:
     return False
 
+@app.route('/api/health', methods=['GET'])
+def health():
+  return jsonify({"status": "ok", "system": "FactoryGuard AI Backend"})
+
 @app.route('/api/login', methods=['POST'])
 def login():
   data = request.json
